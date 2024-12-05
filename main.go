@@ -3,10 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"io/ioutil"
 
-	//"log"
+	//"fmt"
+
+	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 
@@ -22,31 +23,40 @@ type AuthResponse struct {
 }
 
 type credentials struct {
-	shopURL       string
-	clientID      string
-	client_secret string
-	tokenURL      string
-	webstoreId    string
+	shopURL      string
+	clientId     string
+	clientSecret string
+	tokenURL     string
+	webstoreId   string
 }
 
-func credential() credentials {
-	var cred credentials
-	cred.shopURL = os.Getenv("shop_url")
-	cred.clientID = os.Getenv("clientID")
-	cred.client_secret = os.Getenv("clientSecret")
-	cred.webstoreId = os.Getenv("webstoreId")
-	cred.tokenURL = cred.shopURL + "/services/oauth2/token?grant_type=client_credentials&client_id=" + cred.clientID + "&client_secret=" + cred.client_secret
-	return cred
-	//_ = tokenURL
 
+	//_ = tokenURL
+func credential(c *gin.Context) credentials {
+	var cred credentials
+
+	// Fetch headers from the incoming request
+	cred.shopURL = c.GetHeader("shopUrl")
+	cred.clientId = c.GetHeader("clientId")
+	cred.clientSecret = c.GetHeader("clientSecret")
+	cred.webstoreId = c.GetHeader("webstoreId")
+
+	// Validate required headers
+	if cred.shopURL == "" || cred.clientId == "" || cred.clientSecret == "" || cred.webstoreId == "" {
+		log.Println("Missing one or more required headers")
+	}
+
+	// Construct the token URL
+	cred.tokenURL = cred.shopURL + "/services/oauth2/token?grant_type=client_credentials&client_id=" + cred.clientId + "&client_secret=" + cred.clientSecret
+
+	return cred
 }
 
 // Function to fetch access token from Salesforce OAuth 2.0 token URL
-func getAccessToken() (string, error) {
+func getAccessToken(c *gin.Context) (string, error) {
 	// Make the POST request to get the token
-	var credentials_for_access_token credentials = credential()
-	//credentials_for_access_token = credential()
-	var tokenURL = credentials_for_access_token.tokenURL
+	cred := credential(c)
+	var tokenURL = cred.tokenURL
 
 	response, err := http.Post(tokenURL, "application/x-www-form-urlencoded", nil)
 	if err != nil {
@@ -72,10 +82,10 @@ func getAccessToken() (string, error) {
 
 func getProduct(c *gin.Context) {
 	productID := c.Param("id")
-	getapiURL := credential().shopURL + "/services/data/v57.0/commerce/webstores/" + credential().webstoreId + "/products/" + productID
-
+	getapiURL := credential(c).shopURL + "/services/data/v58.0/sobjects/Product2/" + productID
+	//fmt.Println(getapiURL)
 	// Get the dynamic access token
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -106,7 +116,6 @@ func getProduct(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
 		return
 	}
-
 	// Parse the JSON response
 	var result interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -120,9 +129,9 @@ func getProduct(c *gin.Context) {
 
 // Function to create a product and associate it with a category
 func createProduct(c *gin.Context) {
-	creds := credential()
-	postURL := creds.shopURL + "/services/data/v58.0/sobjects/Product2"
-	accessToken, err := getAccessToken()
+	creds := credential(c)
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/management/webstore/" + creds.webstoreId + "/composite-products"
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -169,77 +178,17 @@ func createProduct(c *gin.Context) {
 		return
 	}
 
-	productID, ok := result["id"].(string)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Product ID"})
-		return
-	}
-
-	myMap, err := associateProductWithCategory(productID, os.Getenv("categoryID"))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to associate product with category"})
-		return
-	}
-
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Product associated with category successfully",
-		"data":    myMap,
+		"message":         "Product created successfully",
+		"Product Details": result,
 	})
-}
-
-// Function to associate a product with a category in Salesforce
-func associateProductWithCategory(productID string, categoryID string) (map[string]interface{}, error) {
-	creds := credential()
-	postCategoryProductURL := creds.shopURL + "/services/data/v58.0/sobjects/ProductCategoryProduct"
-	accessToken, err := getAccessToken()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get access token")
-	}
-
-	// Prepare the request body
-	categoryProductData := map[string]interface{}{
-		"ProductCategoryId": categoryID,
-		"ProductId":         productID,
-	}
-
-	jsonCategoryProductData, err := json.Marshal(categoryProductData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal category product JSON")
-	}
-
-	req, err := http.NewRequest("POST", postCategoryProductURL, bytes.NewBuffer(jsonCategoryProductData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create category product request")
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	response, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make POST request to associate product with category")
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read category product response body")
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse category product response")
-	}
-
-	return result, nil
 }
 
 func updateProduct(c *gin.Context) {
 	productID := c.Param("id")
-	updateURL := credential().shopURL + "/services/data/v58.0/sobjects/Product2/" + productID
 
-	accessToken, err := getAccessToken()
+	updateURL := credential(c).shopURL + "/services/data/v58.0/sobjects/Product2/" + productID
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -274,27 +223,14 @@ func updateProduct(c *gin.Context) {
 	}
 	defer response.Body.Close()
 
-	// body, err := ioutil.ReadAll(response.Body)
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
-	// 	return
-	// }
-
-	// var result interface{}
-	// if err := json.Unmarshal(body, &result); err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
-	// 	return
-	// }
-
-	// c.JSON(http.StatusOK, gin.H{"response": result})
 	c.JSON(http.StatusOK, gin.H{"response": "Product updated"})
 }
 
 func deleteProduct(c *gin.Context) {
 	productID := c.Param("id")
-	deleteURL := credential().shopURL + "/services/data/v58.0/sobjects/Product2/" + productID
+	deleteURL := credential(c).shopURL + "/services/data/v58.0/sobjects/Product2/" + productID
 
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -328,10 +264,10 @@ func deleteProduct(c *gin.Context) {
 
 func getOrder(c *gin.Context) {
 	orderID := c.Param("id")
-	getapiURL := credential().shopURL + "/services/data/v58.0/sobjects/order/" + orderID
+	getapiURL := credential(c).shopURL + "/services/data/v58.0/sobjects/order/" + orderID
 
 	// Get the dynamic access token
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -375,35 +311,27 @@ func getOrder(c *gin.Context) {
 }
 
 func createOrder(c *gin.Context) {
-	creds := credential()
-	postURL := creds.shopURL + "/services/data/v58.0/sobjects/order"
-	accessToken, err := getAccessToken()
+	creds := credential(c)
+	accountID := c.Query("accountID")
+	checkoutID := c.Param("checkoutId")
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" + creds.webstoreId + "/checkouts/" + checkoutID + "/orders?effectiveAccountId=" + accountID
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
 	}
 
-	var requestBody map[string]interface{}
-	if err := c.ShouldBindJSON(&requestBody); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
-		return
-	}
-
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
-		return
-	}
-
-	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", postURL, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
 		return
 	}
 
+	// Set request headers
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 
+	// Execute the request
 	client := &http.Client{}
 	response, err := client.Do(req)
 	if err != nil {
@@ -412,27 +340,39 @@ func createOrder(c *gin.Context) {
 	}
 	defer response.Body.Close()
 
+	// Read the response body
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
 		return
 	}
 
+	// Parse the response JSON
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
 		return
 	}
+
+	// Extract the `orderReferenceNumber` from the response
+	orderReferenceNumber, ok := result["orderReferenceNumber"].(string)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "orderReferenceNumber not found in response"})
+		return
+	}
+
+	// Return the orderReferenceNumber to the client
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Order created successfully",
+		"message":              "Order created successfully",
+		"orderReferenceNumber": orderReferenceNumber,
 	})
 }
 
 func updateOrder(c *gin.Context) {
 	orderID := c.Param("id")
-	updateURL := credential().shopURL + "/services/data/v58.0/sobjects/order/" + orderID
+	updateURL := credential(c).shopURL + "/services/data/v58.0/sobjects/order/" + orderID
 
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -471,9 +411,9 @@ func updateOrder(c *gin.Context) {
 }
 func deleteOrder(c *gin.Context) {
 	orderID := c.Param("id")
-	deleteURL := credential().shopURL + "/services/data/v58.0/sobjects/order/" + orderID
+	deleteURL := credential(c).shopURL + "/services/data/v58.0/sobjects/order/" + orderID
 
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -503,193 +443,14 @@ func deleteOrder(c *gin.Context) {
 	}
 }
 
-//Customer Routes
-
-func getCustomer(c *gin.Context) {
-	customerID := c.Param("id")
-	getapiURL := credential().shopURL + "/services/data/v58.0/sobjects/customer/" + customerID
-
-	// Get the dynamic access token
-	accessToken, err := getAccessToken()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
-		return
-	}
-
-	// Create a new request with the API URL
-	req, err := http.NewRequest("GET", getapiURL, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
-		return
-	}
-
-	// Set the Authorization header with the dynamic access token
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	// Send the API request
-	client := &http.Client{}
-	response, err := client.Do(req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make API request"})
-		return
-	}
-	defer response.Body.Close()
-
-	// Read the response body
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
-		return
-	}
-
-	// Parse the JSON response
-	var result interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse JSON"})
-		return
-	}
-
-	// Return the parsed JSON result
-	c.JSON(http.StatusOK, result)
-}
-
-func createCustomer(c *gin.Context) {
-	creds := credential()
-	postURL := creds.shopURL + "/services/data/v58.0/sobjects/customer"
-	accessToken, err := getAccessToken()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
-		return
-	}
-
-	var requestBody map[string]interface{}
-	if err := c.ShouldBindJSON(&requestBody); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
-		return
-	}
-
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
-		return
-	}
-
-	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
-		return
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	response, err := client.Do(req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
-		return
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
-		return
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Customer created successfully",
-	})
-}
-
-func updateCustomer(c *gin.Context) {
-	customerID := c.Param("id")
-	updateURL := credential().shopURL + "/services/data/v58.0/sobjects/customer/" + customerID
-
-	accessToken, err := getAccessToken()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
-		return
-	}
-
-	var requestBody map[string]interface{}
-	if err := c.ShouldBindJSON(&requestBody); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
-		return
-	}
-
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
-		return
-	}
-
-	req, err := http.NewRequest("PATCH", updateURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
-		return
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	response, err := client.Do(req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make PATCH request"})
-		return
-	}
-	defer response.Body.Close()
-
-	c.JSON(http.StatusOK, gin.H{"response": "Customer updated"})
-}
-func deleteCustomer(c *gin.Context) {
-	orderID := c.Param("id")
-	deleteURL := credential().shopURL + "/services/data/v58.0/sobjects/order/" + orderID
-
-	accessToken, err := getAccessToken()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
-		return
-	}
-
-	req, err := http.NewRequest("DELETE", deleteURL, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
-		return
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	response, err := client.Do(req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make DELETE request"})
-		return
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode == http.StatusNoContent {
-		c.JSON(http.StatusOK, gin.H{"message": "Customer deleted successfully"})
-	} else {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete order"})
-	}
-}
-
 //Account Routes start here:
 
 func getAccount(c *gin.Context) {
 	accountID := c.Param("id")
-	getapiURL := credential().shopURL + "/services/data/v58.0/sobjects/account/" + accountID
+	getapiURL := credential(c).shopURL + "/services/data/v58.0/sobjects/account/" + accountID
 
 	// Get the dynamic access token
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -733,9 +494,9 @@ func getAccount(c *gin.Context) {
 }
 
 func createAccount(c *gin.Context) {
-	creds := credential()
+	creds := credential(c)
 	postURL := creds.shopURL + "/services/data/v58.0/sobjects/account"
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -782,15 +543,16 @@ func createAccount(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Account created successfully",
+		"message":         "Account created successfully",
+		"Account Details": result,
 	})
 }
 
 func updateAccount(c *gin.Context) {
 	accountID := c.Param("id")
-	updateURL := credential().shopURL + "/services/data/v58.0/sobjects/account/" + accountID
+	updateURL := credential(c).shopURL + "/services/data/v58.0/sobjects/account/" + accountID
 
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -829,9 +591,9 @@ func updateAccount(c *gin.Context) {
 }
 func deleteAccount(c *gin.Context) {
 	accountID := c.Param("id")
-	deleteURL := credential().shopURL + "/services/data/v58.0/sobjects/account/" + accountID
+	deleteURL := credential(c).shopURL + "/services/data/v58.0/sobjects/account/" + accountID
 
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -863,9 +625,116 @@ func deleteAccount(c *gin.Context) {
 
 func getCategoryDetails(c *gin.Context) {
 	name := c.Param("name")
-	getapiURL := credential().shopURL + "/services/data/v58.0/query?q=select ID from ProductCategory where name='" + name + "'"
+
+	getapiURL := credential(c).shopURL + "/services/data/v58.0/query?q=select%20ID%20from%20ProductCategory%20where%20name='" + name + "'"
+	//encoded_url:=url.PathEscape(getapiURL)
+
 	// Get the dynamic access token
-	accessToken, err := getAccessToken()
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Create a new request with the API URL
+	req, err := http.NewRequest("GET", getapiURL, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set the Authorization header with the dynamic access token
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "PostmanRuntime/7.42.0")
+
+	// Send the API request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make API request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+
+	// Parse the JSON response
+	var result interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse JSON"})
+		return
+	}
+
+	// Return the parsed JSON result
+	c.JSON(http.StatusOK, result)
+}
+
+func getProductDetails(c *gin.Context) {
+	name := c.Param("name")
+
+	getapiURL := credential(c).shopURL + "/services/data/v58.0/query?q=select%20ID%20from%20Product2%20where%20name='" + name + "'"
+	//encoded_url:=url.PathEscape(getapiURL)
+
+	// Get the dynamic access token
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Create a new request with the API URL
+	req, err := http.NewRequest("GET", getapiURL, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set the Authorization header with the dynamic access token
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "PostmanRuntime/7.42.0")
+
+	// Send the API request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make API request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+
+	// Parse the JSON response
+	var result interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse JSON"})
+		return
+	}
+
+	// Return the parsed JSON result
+	c.JSON(http.StatusOK, result)
+}
+
+func getPayment(c *gin.Context) {
+	paymentID := c.Param("id")
+	getapiURL := credential(c).shopURL + "/services/data/v58.0/sobjects/payment/" + paymentID
+
+	// Get the dynamic access token
+	accessToken, err := getAccessToken(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
 		return
@@ -907,9 +776,525 @@ func getCategoryDetails(c *gin.Context) {
 	// Return the parsed JSON result
 	c.JSON(http.StatusOK, result)
 }
+
+func createCart(c *gin.Context) {
+	creds := credential(c)
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" + creds.webstoreId + "/carts"
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Parse the request body
+	var requestBody map[string]interface{}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+
+	// Marshal the request body into JSON
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
+		return
+	}
+
+	// Create the HTTP request
+	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Make the HTTP request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+	// Parse the response
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
+		return
+	}
+
+	// Check for errors in the response
+	if response.StatusCode != http.StatusCreated {
+		c.JSON(response.StatusCode, gin.H{"error": "Failed to create cart", "details": result})
+		return
+	}
+
+	// Extract and return the cart ID
+	cartID, ok := result["cartId"].(string)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Cart ID not found in response"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"cartID": cartID})
+}
+func addItemstoCart(c *gin.Context) {
+	// Load credentials and URL components
+	creds := credential(c)
+	cartID := c.Param("cartId")
+	accountID := c.Query("accountID")
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" + creds.webstoreId + "/carts/" + cartID + "/cart-items?effectiveAccountId=" + accountID
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Parse the request body
+	var requestBody map[string]interface{}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+
+	// Marshal the request body into JSON
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
+		return
+	}
+
+	// Create the HTTP request
+	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Make the HTTP request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+
+	// Parse the response
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
+		return
+	}
+
+	// Check for errors in the response
+	if response.StatusCode != http.StatusCreated {
+		c.JSON(response.StatusCode, gin.H{"error": "Failed to add item to cart", "details": result})
+		return
+	}
+
+	// Return success message
+	c.JSON(http.StatusCreated, gin.H{"message": "Product successfully added to cart"})
+}
+func createDeliveryGroup(c *gin.Context) {
+	// Load credentials
+	creds := credential(c)
+	cartID := c.Param("cartid")
+	accountID := c.Query("accountID")
+
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" +
+		creds.webstoreId + "/carts/" + cartID +
+		"/delivery-groups?effectiveAccountId=" + accountID
+
+	// Retrieve the access token
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Parse JSON payload from the client
+	var requestBody map[string]interface{}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	// Marshal the request body into JSON
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
+		return
+	}
+
+	// Create the POST request
+	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set required headers
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute the HTTP request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+
+	// Parse the response JSON
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
+		return
+	}
+
+	// Return the response back to the client
+	c.JSON(http.StatusOK, gin.H{
+		"message":         "Delivery group created successfully",
+		"deliveryDetails": result,
+	})
+}
+
+func createCheckout(c *gin.Context) {
+	// Load credentials
+	creds := credential(c)
+	accountID := c.Query("accountID")
+
+	// Construct the request URL
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" +
+		creds.webstoreId + "/checkouts?effectiveAccountId=" + accountID
+	// Retrieve the access token
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Parse the request body
+	var requestBody map[string]interface{}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	// Marshal the request body into JSON
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
+		return
+	}
+
+	// Create the POST request
+	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set required headers
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute the HTTP request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+	// Parse the response JSON
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
+		return
+	}
+
+	// Extract the checkoutID
+	checkoutID, ok := result["checkoutId"].(string)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "checkoutID not found in response"})
+		return
+	}
+
+	// Return the checkoutID
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "Checkout created successfully",
+		"checkoutID": checkoutID,
+	})
+}
+
+func createPayment(c *gin.Context) {
+	// Load credentials
+
+	creds := credential(c)
+	checkoutID := c.Param("checkoutId")
+	accountID := c.Query("accountID")
+
+	// Construct the request URL
+	postURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" +
+		creds.webstoreId + "/checkouts/" + checkoutID + "/payments?effectiveAccountId=" +
+		accountID
+	// Retrieve the access token
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Parse the request body
+	var requestBody map[string]interface{}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON payload"})
+		return
+	}
+
+	// Marshal the request body into JSON
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
+		return
+	}
+
+	// Create the POST request
+	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set required headers
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute the HTTP request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+
+	// Parse the response JSON
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
+		return
+	}
+
+	// Return the payment details
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Payment created successfully",
+		"paymentDetails": result,
+	})
+}
+func getOrderSummary(c *gin.Context) {
+	accountID := c.Query("accountID")
+	pageToken := c.Query("pageToken")
+	pageSize := c.Query("pageSize")
+	var queryParameter string
+	if(accountID=="null"){
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Account Id required"})
+	}
+	if(pageSize!="null" ){
+		queryParameter+="pageSize="+pageSize+"&"
+	}
+	if(pageToken!="null"){
+		queryParameter+="pageToken="+pageToken
+	}
+	creds := credential(c)
+	getapiURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" + creds.webstoreId + "/order-summaries?effectiveAccountId=" + accountID + "&ownerScoped=false&fields=AccountId&includeProducts=true&"+queryParameter
+	// Get the dynamic access token
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Create a new request with the API URL
+	req, err := http.NewRequest("GET", getapiURL, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set the Authorization header with the dynamic access token
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Send the API request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make API request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+	// Parse the JSON response
+	var result interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse JSON"})
+		return
+	}
+
+	// Return the parsed JSON result
+	c.JSON(http.StatusOK, result)
+}
+func createCategory(c *gin.Context) {
+	creds := credential(c)
+	postURL := creds.shopURL + "/services/data/v58.0/sobjects/ProductCategory"
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	var requestBody map[string]interface{}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal JSON"})
+		return
+	}
+
+	req, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make POST request"})
+		return
+	}
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse response"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":         "Category created successfully",
+		"Account Details": result,
+	})
+}
+func getProductsList(c *gin.Context) {
+	creds := credential(c)
+	ids:=c.Query("ids")
+	getapiURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/"+creds.webstoreId+"/products?ids="+ids
+	accessToken, err := getAccessToken(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get access token"})
+		return
+	}
+
+	// Create a new request with the API URL
+	req, err := http.NewRequest("GET", getapiURL, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set the Authorization header with the dynamic access token
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Send the API request
+	client := &http.Client{}
+	response, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to make API request"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read the response body
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+		return
+	}
+	// Parse the JSON response
+	var result interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse JSON"})
+		return
+	}
+
+	// Return the parsed JSON result
+	c.JSON(http.StatusOK, result)
+}
+
 func main() {
 	godotenv.Load(".env")
-	//fmt.Println(credential().tokenURL)
 	router := gin.Default()
 
 	router.Use(cors.Default())
@@ -920,32 +1305,44 @@ func main() {
 		})
 	})
 
+
 	//product routes
-	router.GET("/getProduct/:id", getProduct)
+	router.GET("/getProductDetailsbyId/:id", getProduct)
 	router.POST("/createProduct", createProduct)
-	router.PATCH("/updateProduct/:id", updateProduct)
-	router.DELETE("/deleteProduct/:id", deleteProduct)
+	router.PATCH("/updateProductbyId/:id", updateProduct)
+	router.DELETE("/deleteProductbyId/:id", deleteProduct)
 
 	//order routes
-	router.GET("/getOrder/:id", getOrder)
-	router.POST("/createOrder", createOrder)
-	router.PATCH("/updateOrder/:id", updateOrder)
-	router.DELETE("/deleteOrder/:id", deleteOrder)
-
-	//customer routes
-	router.GET("/getCustomer/:id", getCustomer)
-	router.POST("/createCustomer", createCustomer)
-	router.PATCH("/updateCustomer/:id", updateCustomer)
-	router.DELETE("/deleteCustomer/:id", deleteCustomer)
+	router.GET("/getOrderDetailsbyId/:id", getOrder)
+	router.POST("/createOrder/:checkoutId", createOrder)
+	router.PATCH("/updateOrderbyId/:id", updateOrder)
+	router.DELETE("/deleteOrderbyId/:id", deleteOrder)
+	router.GET("/getOrderSummary", getOrderSummary)
 
 	//account routes
-	router.GET("/getAccount/:id", getAccount)
+	router.GET("/getAccountDetailsbyId/:id", getAccount)
 	router.POST("/createAccount", createAccount)
-	router.PATCH("/updateAccount/:id", updateAccount)
-	router.DELETE("/deleteAccount/:id", deleteAccount)
+	router.PATCH("/updateAccountbyId/:id", updateAccount)
+	router.DELETE("/deleteAccountbyId/:id", deleteAccount)
 
 	//getCategoryId from Name
-	router.GET("getCategoryDetails/:name", getCategoryDetails)
+	router.GET("/getCategoryDetailsbyName/:name", getCategoryDetails)
+	router.GET("/getProductDetailsbyName/:name", getProductDetails)
+
+	//getPayment
+	router.GET("/getPayment/:id", getPayment)
+
+	//craeteCart
+	router.POST("/createCart", createCart)
+	router.POST("/addItemstoCart/:cartId", addItemstoCart)
+	router.POST("addDeliveryGroup/:cartId", createDeliveryGroup)
+	//checkoutandpayment
+	router.POST("/checkout", createCheckout)
+	router.POST("/setPaymentMethod/:checkoutId", createPayment)
+
+	//additional
+	router.POST("createProductCategory",createCategory)
+	router.GET("listProductsbypassingIds",getProductsList)
 
 	port := os.Getenv("CONNECTOR_ENV_PORT")
 	if port == "" {
