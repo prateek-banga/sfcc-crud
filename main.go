@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-
+	"strings"
 	//"fmt"
 
 	"io/ioutil"
@@ -305,6 +305,7 @@ func getOrder(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse JSON"})
 		return
 	}
+	
 
 	// Return the parsed JSON result
 	c.JSON(http.StatusOK, result)
@@ -589,6 +590,7 @@ func updateAccount(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"response": "Account updated"})
 }
+
 func deleteAccount(c *gin.Context) {
 	accountID := c.Param("id")
 	deleteURL := credential(c).shopURL + "/services/data/v58.0/sobjects/account/" + accountID
@@ -1139,18 +1141,32 @@ func getOrderSummary(c *gin.Context) {
 	accountID := c.Query("accountID")
 	pageToken := c.Query("pageToken")
 	pageSize := c.Query("pageSize")
-	var queryParameter string
-	if(accountID=="null"){
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Account Id required"})
+
+	// Check if accountID is required
+	if accountID == "null" || accountID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Account ID required"})
+		return
 	}
-	if(pageSize!="null" ){
-		queryParameter+="pageSize="+pageSize+"&"
+
+	// Initialize the query parameters
+	var queryParameters []string
+	if pageSize != "null" && pageSize != "" {
+		queryParameters = append(queryParameters, "pageSize="+pageSize)
 	}
-	if(pageToken!="null"){
-		queryParameter+="pageToken="+pageToken
+	if pageToken != "null" && pageToken != "" {
+		queryParameters = append(queryParameters, "pageToken="+pageToken)
 	}
+
+	// Combine query parameters
+	queryString := ""
+	if len(queryParameters) > 0 {
+		queryString = "&" + strings.Join(queryParameters, "&")
+	}
+
+	// Build the API URL
 	creds := credential(c)
-	getapiURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" + creds.webstoreId + "/order-summaries?effectiveAccountId=" + accountID + "&ownerScoped=false&fields=AccountId&includeProducts=true&"+queryParameter
+	getapiURL := creds.shopURL + "/services/data/v62.0/commerce/webstores/" + creds.webstoreId + "/order-summaries?effectiveAccountId=" + accountID + "&ownerScoped=false&fields=AccountId&includeProducts=true" + queryString
+
 	// Get the dynamic access token
 	accessToken, err := getAccessToken(c)
 	if err != nil {
@@ -1158,14 +1174,14 @@ func getOrderSummary(c *gin.Context) {
 		return
 	}
 
-	// Create a new request with the API URL
+	// Create the request
 	req, err := http.NewRequest("GET", getapiURL, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
 		return
 	}
 
-	// Set the Authorization header with the dynamic access token
+	// Set the Authorization header
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	// Send the API request
@@ -1183,6 +1199,7 @@ func getOrderSummary(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
 		return
 	}
+
 	// Parse the JSON response
 	var result interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -1193,6 +1210,7 @@ func getOrderSummary(c *gin.Context) {
 	// Return the parsed JSON result
 	c.JSON(http.StatusOK, result)
 }
+
 func createCategory(c *gin.Context) {
 	creds := credential(c)
 	postURL := creds.shopURL + "/services/data/v58.0/sobjects/ProductCategory"
